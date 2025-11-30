@@ -317,12 +317,7 @@ h1 {
   height: 100%;
   border: 0;
 }
-.controls {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-top: 10px;
-}
+
 .input,
 button {
   padding: 8px 10px;
