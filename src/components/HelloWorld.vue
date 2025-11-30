@@ -12,11 +12,11 @@
         </div>
       </div>
 
-      <div class="">
+      <div class="controls">
         <input
           v-model="url"
           class="input grow"
-          placeholder="ألصق رابط (YouTube/Vimeo/MP4/MP3/PDF/ أي رابط)"
+          placeholder="ألصق رابط (YouTube/Vimeo/MP4/MP3/PDF/HLS/DASH)"
         />
         <input
           v-model="label"
@@ -29,8 +29,8 @@
       </div>
 
       <div class="note">
-        يدعم: YouTube, Vimeo, ملفات الفيديو (mp4, webm), صوت (mp3,wav), PDF و صفحات iframe عامة.
-        يمكن إضافة روابط متعددة.
+        يدعم: YouTube, Vimeo, ملفات الفيديو (mp4, webm), صوت (mp3,wav), PDF و صفحات iframe عامة و
+        HLS/DASH. يمكن إضافة روابط متعددة.
       </div>
 
       <div class="playlist" id="playlist">
@@ -67,6 +67,8 @@
 </template>
 
 <script>
+import Hls from 'hls.js'
+
 export default {
   name: 'UniversalEmbedPlayer',
   data() {
@@ -75,41 +77,19 @@ export default {
       label: '',
       playlist: [],
       currentIndex: -1,
-      hlsScriptLoaded: false,
+      hlsInstance: null, // لتخزين كائن Hls
     }
   },
   computed: {
     exampleIframe() {
       const base = location.href.split('#')[0].split('?')[0]
       const data = JSON.stringify(this.playlist)
-      // base64 safe encoding for unicode
       const encoded = btoa(unescape(encodeURIComponent(data)))
       const src = base + '?links=' + encodeURIComponent(encoded)
       return `<iframe src="${src}" width="800" height="520" frameborder="0" allowfullscreen></iframe>`
     },
   },
   methods: {
-    // Helpers
-    isYouTube(url) {
-      return /(?:youtube\.com\/watch\?|youtu\.be\/)/i.test(url)
-    },
-    youtubeEmbed(url) {
-      let id = null
-      const m = url.match(/[?&]v=([^&]+)/)
-      if (m) id = m[1]
-      else {
-        const s = url.match(/youtu\.be\/([^?&]+)/)
-        if (s) id = s[1]
-      }
-      return id ? `https://www.youtube.com/embed/${id}?rel=0&autoplay=0&modestbranding=1` : null
-    },
-    isVimeo(url) {
-      return /vimeo\.com\/(?:video\/)?\d+/i.test(url)
-    },
-    vimeoEmbed(url) {
-      const m = url.match(/(\d+)/)
-      return m ? `https://player.vimeo.com/video/${m[1]}` : null
-    },
     ext(url) {
       try {
         return url.split('?')[0].split('.').pop().toLowerCase()
@@ -118,35 +98,32 @@ export default {
       }
     },
     detectType(url) {
-      try {
-        const e = this.ext(url)
-        if (this.isYouTube(url)) return 'youtube'
-        if (this.isVimeo(url)) return 'vimeo'
-        if (e === 'mp4' || e === 'webm' || e === 'ogg') return 'video'
-        if (e === 'mp3' || e === 'wav' || e === 'm4a') return 'audio'
-        if (e === 'pdf') return 'pdf'
-        if (url.includes('.m3u8')) return 'hls'
-        return 'iframe'
-      } catch (e) {
-        return 'iframe'
-      }
+      const e = this.ext(url)
+      if (/youtube\.com\/watch\?|youtu\.be\//i.test(url)) return 'youtube'
+      if (/vimeo\.com\/(?:video\/)?\d+/i.test(url)) return 'vimeo'
+      if (['mp4', 'webm', 'ogg'].includes(e)) return 'video'
+      if (['mp3', 'wav', 'm4a'].includes(e)) return 'audio'
+      if (e === 'pdf') return 'pdf'
+      if (url.includes('.m3u8') || url.includes('.mpd')) return 'hls'
+      return 'iframe'
     },
-
-    // Player rendering
     clearPlayer() {
       const root = this.$refs.player || document.getElementById('player')
       root.innerHTML = ''
+      if (this.hlsInstance) {
+        this.hlsInstance.destroy()
+        this.hlsInstance = null
+      }
       return root
     },
-
     renderPlayerItem(item) {
       const root = this.clearPlayer()
       const type = this.detectType(item.url)
 
       if (type === 'youtube') {
-        const src = this.youtubeEmbed(item.url)
+        const id = item.url.includes('v=') ? item.url.split('v=')[1] : item.url.split('/').pop()
         const ifr = document.createElement('iframe')
-        ifr.src = src
+        ifr.src = `https://www.youtube.com/embed/${id}?rel=0&autoplay=0&modestbranding=1`
         ifr.allow =
           'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share'
         ifr.style.width = '100%'
@@ -156,8 +133,9 @@ export default {
       }
 
       if (type === 'vimeo') {
+        const id = item.url.match(/(\d+)/)[1]
         const ifr = document.createElement('iframe')
-        ifr.src = this.vimeoEmbed(item.url)
+        ifr.src = `https://player.vimeo.com/video/${id}`
         ifr.style.width = '100%'
         ifr.style.height = '100%'
         root.appendChild(ifr)
@@ -200,29 +178,12 @@ export default {
         vid.style.height = '100%'
         root.appendChild(vid)
 
-        if (vid.canPlayType('application/vnd.apple.mpegurl')) {
+        if (Hls.isSupported()) {
+          this.hlsInstance = new Hls()
+          this.hlsInstance.loadSource(item.url)
+          this.hlsInstance.attachMedia(vid)
+        } else if (vid.canPlayType('application/vnd.apple.mpegurl')) {
           vid.src = item.url
-        } else {
-          // load hls.js dynamically
-          if (!this.hlsScriptLoaded) {
-            const s = document.createElement('script')
-            s.src = 'https://cdn.jsdelivr.net/npm/hls.js@1'
-            s.onload = () => {
-              this.hlsScriptLoaded = true
-              if (window.Hls) {
-                const hls = new window.Hls()
-                hls.loadSource(item.url)
-                hls.attachMedia(vid)
-              }
-            }
-            document.body.appendChild(s)
-          } else {
-            if (window.Hls) {
-              const hls = new window.Hls()
-              hls.loadSource(item.url)
-              hls.attachMedia(vid)
-            }
-          }
         }
         return
       }
@@ -234,8 +195,6 @@ export default {
       ifr.style.height = '100%'
       root.appendChild(ifr)
     },
-
-    // UI handlers
     onAdd() {
       const url = (this.url || '').trim()
       if (!url) return
@@ -246,94 +205,59 @@ export default {
       }
       this.url = ''
       this.label = ''
-      this.updateExample() // update example display
+      this.updateExample()
     },
     playIndex(i) {
       this.currentIndex = i
       this.renderPlayerItem(this.playlist[i])
     },
     remove(i) {
-      if (i < 0 || i >= this.playlist.length) return
       this.playlist.splice(i, 1)
-      if (this.playlist.length === 0) {
-        this.clearPlayer()
-      } else {
-        const idx = Math.min(this.currentIndex, this.playlist.length - 1)
-        this.currentIndex = idx
-        this.renderPlayerItem(this.playlist[idx])
-      }
+      if (!this.playlist.length) this.clearPlayer()
+      else
+        this.renderPlayerItem(this.playlist[Math.min(this.currentIndex, this.playlist.length - 1)])
       this.updateExample()
     },
     openInNew(url) {
       window.open(url, '_blank')
     },
-
-    // iframe share
-    updateExample() {
-      // reactive computed exampleIframe will change automatically
-    },
+    updateExample() {},
     onCopyIframe() {
       const iframe = this.exampleIframe
       if (!navigator.clipboard) {
-        // fallback
         window.prompt('انسخ الكود يدوياً:', iframe)
         return
       }
       navigator.clipboard
         .writeText(iframe)
-        .then(() => {
-          alert('تم نسخ الـ iframe')
-        })
-        .catch(() => {
-          window.prompt('انسخ الكود يدوياً:', iframe)
-        })
+        .then(() => alert('تم نسخ الـ iframe'))
+        .catch(() => window.prompt('انسخ الكود يدوياً:', iframe))
     },
-
-    // parse links param
     loadFromQuery() {
       const params = new URLSearchParams(window.location.search)
       if (params.has('links')) {
         try {
-          const raw = params.get('links')
-          // decode base64 that was encoded via encodeURIComponent + btoa
-          const decoded = decodeURIComponent(escape(atob(raw)))
+          const decoded = decodeURIComponent(escape(atob(params.get('links'))))
           const arr = JSON.parse(decoded)
-          if (Array.isArray(arr)) {
-            this.playlist = arr
-            if (this.playlist.length) {
-              this.currentIndex = 0
-              this.renderPlayerItem(this.playlist[0])
-            }
-          }
+          if (Array.isArray(arr)) this.playlist = arr
         } catch (e) {
-          // attempt legacy decode (if not encoded same way)
-          try {
-            const arr = JSON.parse(atob(params.get('links')))
-            if (Array.isArray(arr)) {
-              this.playlist = arr
-              if (this.playlist.length) {
-                this.currentIndex = 0
-                this.renderPlayerItem(this.playlist[0])
-              }
-            }
-          } catch (e2) {
-            console.warn('failed to parse links param', e, e2)
-          }
+          console.warn('failed to parse links param', e)
         }
       } else if (params.has('src')) {
         this.playlist = [{ url: params.get('src'), label: params.get('label') || '' }]
-        if (this.playlist.length) {
-          this.currentIndex = 0
-          this.renderPlayerItem(this.playlist[0])
-        }
+      }
+      if (this.playlist.length) {
+        this.currentIndex = 0
+        this.renderPlayerItem(this.playlist[0])
       }
     },
   },
   mounted() {
-    // load from query if present
     this.loadFromQuery()
-    // ensure initial example computed value updates
     this.updateExample()
+  },
+  beforeUnmount() {
+    if (this.hlsInstance) this.hlsInstance.destroy()
   },
 }
 </script>
@@ -355,7 +279,6 @@ body {
   margin: 28px auto;
   width: 80%;
   padding: 18px;
-  align-self: center;
   background: black;
   border-radius: 12px;
   box-shadow: 0 8px 30px rgba(2, 6, 23, 0.6);
@@ -396,9 +319,7 @@ h1 {
 }
 .controls {
   display: flex;
-  flex-flow: row, wrap;
   gap: 8px;
-  background-color: red;
   align-items: center;
   margin-top: 10px;
 }
@@ -446,29 +367,12 @@ button {
   color: var(--muted);
   font-size: 13px;
 }
-.flex {
-  display: flex;
-  gap: 8px;
-}
 .grow {
   flex: 1;
 }
-
-.player-wrapper {
-  width: 100%;
-  background: #000;
-  border-radius: 10px;
-  overflow: hidden;
-}
 @media (max-width: 600px) {
-  .player-wrapper iframe,
-  .player-wrapper video,
-  .player-wrapper audio {
-    height: 240px !important;
-  }
-  .controls {
-    display: flex;
-    flex-flow: row, wrap;
+  .media {
+    height: 240px;
   }
 }
 </style>
